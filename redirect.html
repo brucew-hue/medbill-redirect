@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head><title>Redirecting...</title></head>
+<body>
+<script>
+  // This page receives the auth token from Microsoft
+  // and passes it back to the local dashboard via localStorage
+  if (window.opener) {
+    window.opener.postMessage(window.location.href, '*');
+    window.close();
+  } else {
+    // Fallback for redirect flow
+    const hash = window.location.hash || window.location.search;
+    localStorage.setItem('msal_redirect', hash);
+    document.body.innerHTML = '<p style="font-family:sans-serif;padding:20px">✅ Authenticated! You can close this tab and return to your dashboard.</p>';
+  }
+</script>
+</body>
+</html>

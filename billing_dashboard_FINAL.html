@@ -1,0 +1,1526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Medical Billing Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<script>
+// ══════════════════════════════════════════════════════════════
+// ▼▼▼  UPDATE THIS AFTER CREATING YOUR GITHUB PAGES  ▼▼▼
+// Replace YOUR_GITHUB_USERNAME with your actual GitHub username
+// ══════════════════════════════════════════════════════════════
+const GITHUB_REDIRECT_URI = 'https://YOUR_GITHUB_USERNAME.github.io/medbill-redirect/redirect.html';
+
+const CLIENT_ID = 'e6f0e329-41d9-4bbc-94a9-33b1fc0b54d0';
+const TENANT_ID = 'f10478de-7068-4f58-b7c0-28a1ff4bf1fc';
+const GRAPH_SCOPES = ['Files.Read', 'Sites.Read.All', 'User.Read'];
+
+const SP_USER    = 'bruce_wayne_intellircm_com';
+const SP_HOST    = 'mitpl-my.sharepoint.com';
+const SP_FILE    = '/personal/bruce_wayne_intellircm_com/Documents/2026 All Project File/Production Data/Billing, Payment, EV, Rejection Tracking 2026.xlsx';
+// ══════════════════════════════════════════════════════════════
+
+const msalApp = new msal.PublicClientApplication({
+  auth: {
+    clientId: CLIENT_ID,
+    authority: `https://login.microsoftonline.com/${TENANT_ID}`,
+    redirectUri: GITHUB_REDIRECT_URI,
+  },
+  cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: true }
+});
+
+async function msSignIn() {
+  const result = await msalApp.loginPopup({ scopes: GRAPH_SCOPES });
+  msalApp.setActiveAccount(result.account);
+  return result.account;
+}
+
+async function getGraphToken() {
+  const account = msalApp.getActiveAccount()
+    || (msalApp.getAllAccounts()[0] || null);
+  if (!account) throw new Error('Not signed in');
+  msalApp.setActiveAccount(account);
+  try {
+    const r = await msalApp.acquireTokenSilent({ scopes: GRAPH_SCOPES, account });
+    return r.accessToken;
+  } catch(e) {
+    const r = await msalApp.acquireTokenPopup({ scopes: GRAPH_SCOPES, account });
+    return r.accessToken;
+  }
+}
+
+async function fetchSharePointFile() {
+  const token = await getGraphToken();
+
+  // Use OneDrive personal drives endpoint — most reliable for personal OneDrive
+  const driveUrl = `https://graph.microsoft.com/v1.0/users/${SP_USER}@${SP_HOST.replace('-my.sharepoint.com', '')}.com/drive/root:${SP_FILE.substring(SP_FILE.indexOf('/Documents'))}`;
+
+  const metaRes = await fetch(driveUrl, {
+    headers: { Authorization: 'Bearer ' + token }
+  });
+
+  if (metaRes.ok) {
+    const meta = await metaRes.json();
+    const dlUrl = meta['@microsoft.graph.downloadUrl'];
+    if (dlUrl) {
+      const fileRes = await fetch(dlUrl);
+      if (fileRes.ok) return await fileRes.arrayBuffer();
+    }
+  }
+
+  // Fallback: try /me/drive path (works if signed-in user owns the file)
+  const meUrl = `https://graph.microsoft.com/v1.0/me/drive/root:${SP_FILE.substring(SP_FILE.indexOf('/Documents'))}`;
+  const meRes = await fetch(meUrl, {
+    headers: { Authorization: 'Bearer ' + token }
+  });
+  if (!meRes.ok) throw new Error(`Graph API ${meRes.status}: ${await meRes.text()}`);
+  const meMeta = await meRes.json();
+  const meDl = meMeta['@microsoft.graph.downloadUrl'];
+  if (!meDl) throw new Error('Could not get download URL from Graph API');
+  const fileRes = await fetch(meDl);
+  if (!fileRes.ok) throw new Error(`File download failed: ${fileRes.status}`);
+  return await fileRes.arrayBuffer();
+}
+</script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  --bg: #f0f2f5;
+  --sidebar: #1a1f2e;
+  --sidebar-hover: #252d40;
+  --sidebar-active: #2563eb;
+  --sidebar-text: #94a3b8;
+  --sidebar-text-active: #ffffff;
+  --card: #ffffff;
+  --border: #e2e8f0;
+  --text: #1e293b;
+  --text2: #64748b;
+  --text3: #94a3b8;
+  --blue: #2563eb;
+  --blue-light: #eff6ff;
+  --green: #16a34a;
+  --green-light: #f0fdf4;
+  --yellow: #d97706;
+  --yellow-light: #fffbeb;
+  --red: #dc2626;
+  --red-light: #fef2f2;
+  --purple: #7c3aed;
+  --purple-light: #f5f3ff;
+  --orange: #ea580c;
+  --orange-light: #fff7ed;
+  --teal: #0891b2;
+  --teal-light: #ecfeff;
+  --radius: 10px;
+  --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.04);
+  --shadow-md: 0 4px 12px rgba(0,0,0,.1);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; overflow: hidden; }
+
+/* ━━━━ SIDEBAR ━━━━ */
+#sidebar {
+  width: 240px; min-width: 240px; background: var(--sidebar);
+  display: flex; flex-direction: column; height: 100vh; overflow-y: auto;
+  transition: width .25s; position: relative; z-index: 10;
+}
+.sidebar-logo {
+  padding: 20px 18px 16px;
+  border-bottom: 1px solid rgba(255,255,255,.07);
+  display: flex; align-items: center; gap: 10px;
+}
+.logo-icon {
+  width: 34px; height: 34px; border-radius: 8px;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; flex-shrink: 0;
+}
+.logo-text { font-size: 13px; font-weight: 600; color: #fff; line-height: 1.3; }
+.logo-sub { font-size: 10px; color: var(--sidebar-text); }
+
+.sidebar-section { padding: 16px 10px 6px; }
+.sidebar-section-label {
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .8px; color: var(--sidebar-text); padding: 0 8px; margin-bottom: 4px;
+}
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-radius: 7px; cursor: pointer;
+  transition: all .15s; color: var(--sidebar-text); font-size: 13px; font-weight: 500;
+  margin-bottom: 2px;
+}
+.nav-item:hover { background: var(--sidebar-hover); color: #fff; }
+.nav-item.active { background: var(--sidebar-active); color: #fff; }
+.nav-icon { font-size: 15px; width: 20px; text-align: center; flex-shrink: 0; }
+.nav-badge {
+  margin-left: auto; background: rgba(255,255,255,.15); color: #fff;
+  font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 10px;
+}
+.nav-item.active .nav-badge { background: rgba(255,255,255,.3); }
+
+.sidebar-divider { height: 1px; background: rgba(255,255,255,.07); margin: 10px 10px; }
+
+.file-info-box {
+  margin: 10px; padding: 10px 12px;
+  background: rgba(255,255,255,.05); border-radius: 8px;
+  border: 1px solid rgba(255,255,255,.08);
+}
+.file-info-label { font-size: 10px; color: var(--sidebar-text); margin-bottom: 4px; }
+.file-info-name { font-size: 11px; color: #fff; font-weight: 500; word-break: break-all; line-height: 1.4; }
+.file-info-rows { font-size: 10px; color: var(--sidebar-text); margin-top: 3px; }
+
+/* ━━━━ MAIN ━━━━ */
+#main { flex: 1; overflow-y: auto; display: flex; flex-direction: column; min-width: 0; }
+
+/* ━━━━ UPLOAD SCREEN ━━━━ */
+#upload-view {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; padding: 40px 20px; min-height: 100%;
+}
+.upload-hero { text-align: center; margin-bottom: 32px; }
+.upload-hero h2 { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+.upload-hero p { font-size: 14px; color: var(--text2); max-width: 440px; line-height: 1.6; }
+
+.drop-zone {
+  width: 100%; max-width: 520px; border: 2px dashed var(--border);
+  border-radius: 14px; padding: 44px 32px; text-align: center; cursor: pointer;
+  transition: all .2s; background: var(--card); position: relative;
+}
+.drop-zone:hover, .drop-zone.drag-over {
+  border-color: var(--blue); background: var(--blue-light);
+  box-shadow: 0 0 0 4px rgba(37,99,235,.1);
+}
+.drop-zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+.dz-icon { font-size: 40px; margin-bottom: 12px; display: block; }
+.drop-zone h3 { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 5px; }
+.drop-zone p { font-size: 13px; color: var(--text2); }
+.dz-chips { display: flex; gap: 6px; justify-content: center; margin-top: 12px; }
+.dz-chip { padding: 3px 10px; border-radius: 5px; font-size: 11px; font-weight: 600; background: #f1f5f9; color: var(--text2); font-family: 'JetBrains Mono', monospace; }
+
+.progress-wrap { width: 100%; max-width: 520px; margin-top: 14px; display: none; }
+.progress-label { font-size: 12px; color: var(--text2); margin-bottom: 6px; }
+.pbar { height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.pfill { height: 100%; background: linear-gradient(90deg,var(--blue),var(--purple)); border-radius: 3px; width: 0%; transition: width .3s; }
+
+#parse-error { margin-top: 12px; padding: 10px 14px; border-radius: 7px; background: var(--red-light); border: 1px solid #fca5a5; color: var(--red); font-size: 13px; max-width: 520px; width: 100%; display: none; }
+
+.sheet-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 24px; max-width: 520px; width: 100%; }
+.sheet-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; display: flex; align-items: flex-start; gap: 10px; }
+.sheet-card-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+.sheet-card h4 { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
+.sheet-card p { font-size: 11px; color: var(--text2); line-height: 1.4; }
+
+/* ━━━━ DASHBOARD VIEW ━━━━ */
+#dash-view { display: none; flex-direction: column; min-height: 100%; }
+
+.dash-header {
+  background: var(--card); border-bottom: 1px solid var(--border);
+  padding: 14px 22px; display: flex; align-items: center; gap: 12px;
+  position: sticky; top: 0; z-index: 50;
+}
+.dash-title { font-size: 16px; font-weight: 700; color: var(--text); }
+.dash-subtitle { font-size: 12px; color: var(--text2); }
+.dash-header-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+/* Filters bar */
+.filters-bar {
+  background: var(--card); border-bottom: 1px solid var(--border);
+  padding: 10px 22px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+}
+.filter-group { display: flex; align-items: center; gap: 6px; }
+.filter-label { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .4px; white-space: nowrap; }
+
+.seg-btn-group { display: flex; background: #f1f5f9; border-radius: 7px; padding: 2px; gap: 2px; }
+.seg-btn {
+  padding: 5px 12px; border-radius: 5px; border: none;
+  background: transparent; color: var(--text2); font-size: 12px; font-weight: 500;
+  cursor: pointer; transition: all .15s; font-family: 'Inter', sans-serif;
+}
+.seg-btn:hover { color: var(--text); }
+.seg-btn.active { background: #fff; color: var(--blue); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+
+select, input[type=date] {
+  border: 1px solid var(--border); background: #fff; color: var(--text);
+  padding: 5px 10px; border-radius: 7px; font-size: 12px; font-family: 'Inter', sans-serif;
+  cursor: pointer; outline: none;
+}
+select:focus, input[type=date]:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
+
+.filter-sep { width: 1px; height: 20px; background: var(--border); }
+
+/* Date range pickers */
+.date-range-group { display: flex; align-items: center; gap: 6px; }
+.date-range-group span { font-size: 12px; color: var(--text3); }
+
+/* ━━━━ CONTENT ━━━━ */
+.content { padding: 20px 22px; flex: 1; }
+
+/* KPI Grid */
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.kpi-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px; position: relative; overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.kpi-card::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; border-radius: 4px 0 0 4px; }
+.kpi-blue::before { background: var(--blue); }
+.kpi-green::before { background: var(--green); }
+.kpi-yellow::before { background: var(--yellow); }
+.kpi-red::before { background: var(--red); }
+.kpi-purple::before { background: var(--purple); }
+.kpi-orange::before { background: var(--orange); }
+.kpi-teal::before { background: var(--teal); }
+
+.kpi-label { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; }
+.kpi-value { font-size: 24px; font-weight: 700; font-family: 'JetBrains Mono', monospace; line-height: 1.1; }
+.kpi-sub { font-size: 11px; color: var(--text3); margin-top: 3px; }
+.kpi-blue .kpi-value { color: var(--blue); }
+.kpi-green .kpi-value { color: var(--green); }
+.kpi-yellow .kpi-value { color: var(--yellow); }
+.kpi-red .kpi-value { color: var(--red); }
+.kpi-purple .kpi-value { color: var(--purple); }
+.kpi-orange .kpi-value { color: var(--orange); }
+.kpi-teal .kpi-value { color: var(--teal); }
+
+/* Charts */
+.charts-row { display: grid; gap: 14px; margin-bottom: 16px; }
+.charts-row.cols-2 { grid-template-columns: 1fr 1fr; }
+.charts-row.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+.charts-row.cols-1 { grid-template-columns: 1fr; }
+@media(max-width:900px){.charts-row.cols-2,.charts-row.cols-3{grid-template-columns:1fr;}}
+
+.chart-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow);
+}
+.chart-title {
+  font-size: 13px; font-weight: 600; color: var(--text);
+  margin-bottom: 14px; display: flex; align-items: center; gap: 8px;
+}
+.ct-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.chart-wrap { position: relative; height: 220px; }
+
+/* Table */
+.table-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); margin-bottom: 16px;
+}
+.table-card-header {
+  padding: 14px 18px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.table-card-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+thead th {
+  text-align: left; padding: 9px 14px;
+  background: #f8fafc; color: var(--text2); font-weight: 600;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .4px;
+  border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+tbody td { padding: 9px 14px; border-bottom: 1px solid #f1f5f9; color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover td { background: #f8fafc; }
+td.lbl { font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 500; }
+td.c-blue { color: var(--blue); font-weight: 600; }
+td.c-green { color: var(--green); font-weight: 600; }
+td.c-red { color: var(--red); font-weight: 600; }
+td.c-yellow { color: var(--yellow); font-weight: 600; }
+td.c-purple { color: var(--purple); font-weight: 600; }
+tr.total-row td { font-weight: 700; background: #f8fafc; border-top: 2px solid var(--border); }
+
+.badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 5px; font-size: 11px; font-weight: 600; font-family: 'Inter', sans-serif; }
+.badge-era { background: #eff6ff; color: var(--blue); }
+.badge-eob { background: #f0fdf4; color: var(--green); }
+.badge-pend { background: #fffbeb; color: var(--yellow); }
+.badge-comp { background: #f0fdf4; color: var(--green); }
+
+.rate-bar { display: flex; align-items: center; gap: 8px; }
+.rate-bar-track { flex: 1; height: 5px; background: #e2e8f0; border-radius: 3px; overflow: hidden; min-width: 60px; }
+.rate-bar-fill { height: 100%; border-radius: 3px; }
+
+.no-data { color: var(--text3); text-align: center; padding: 40px; font-size: 13px; }
+
+/* Info banner */
+.info-banner {
+  background: var(--blue-light); border: 1px solid #bfdbfe;
+  border-radius: var(--radius); padding: 12px 16px; margin-bottom: 16px;
+  display: flex; gap: 10px; align-items: flex-start; font-size: 13px; color: #1e40af; line-height: 1.5;
+}
+
+/* Btn */
+.btn-primary {
+  padding: 7px 16px; border-radius: 7px; border: none;
+  background: var(--blue); color: #fff; font-size: 13px; font-weight: 600;
+  cursor: pointer; font-family: 'Inter', sans-serif; transition: all .15s;
+}
+.btn-primary:hover { background: #1d4ed8; }
+.btn-outline {
+  padding: 6px 13px; border-radius: 7px; border: 1px solid var(--border);
+  background: #fff; color: var(--text2); font-size: 12px; font-weight: 500;
+  cursor: pointer; font-family: 'Inter', sans-serif; transition: all .15s;
+}
+.btn-outline:hover { border-color: var(--blue); color: var(--blue); }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+
+/* ━━━━ MS AUTH ━━━━ */
+.ms-signin-btn {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 20px; border-radius: 8px;
+  border: 1px solid #8c8c8c; background: #fff;
+  color: #5e5e5e; font-size: 14px; font-weight: 600;
+  cursor: pointer; font-family: 'Inter', sans-serif;
+  transition: all .15s; box-shadow: 0 1px 3px rgba(0,0,0,.1);
+  width: 100%; max-width: 320px; justify-content: center;
+}
+.ms-signin-btn:hover { background: #f5f5f5; box-shadow: 0 2px 6px rgba(0,0,0,.15); }
+.ms-signin-btn:disabled { opacity: .6; cursor: wait; }
+.ms-logo { width: 20px; height: 20px; flex-shrink: 0; }
+
+.or-divider {
+  display: flex; align-items: center; gap: 12px;
+  width: 100%; max-width: 520px; margin: 20px 0;
+  color: var(--text3); font-size: 12px;
+}
+.or-divider::before, .or-divider::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+
+.auth-status-bar {
+  display: none; align-items: center; gap: 8px;
+  padding: 8px 14px; border-radius: 7px;
+  background: var(--green-light); border: 1px solid #bbf7d0;
+  font-size: 12px; color: var(--green); font-weight: 500;
+  width: 100%; max-width: 520px; margin-bottom: 10px;
+}
+.auth-status-bar.error { background: var(--red-light); border-color: #fca5a5; color: var(--red); }
+.auth-status-bar.loading { background: var(--blue-light); border-color: #bfdbfe; color: var(--blue); }
+
+.fetch-sp-btn {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 20px; border-radius: 7px; border: none;
+  background: linear-gradient(135deg, #0078d4, #005a9e);
+  color: #fff; font-size: 13px; font-weight: 600;
+  cursor: pointer; font-family: 'Inter', sans-serif;
+  transition: all .15s; width: 100%; max-width: 320px;
+  justify-content: center;
+}
+.fetch-sp-btn:hover { background: linear-gradient(135deg,#005a9e,#004578); }
+.fetch-sp-btn:disabled { opacity: .6; cursor: wait; }
+
+.sidebar-user-box {
+  margin: 0 10px 10px; padding: 10px 12px;
+  background: rgba(37,99,235,.15); border-radius: 8px;
+  border: 1px solid rgba(37,99,235,.25);
+}
+.sidebar-user-name { font-size: 11px; color: #93c5fd; font-weight: 600; }
+.sidebar-user-email { font-size: 10px; color: var(--sidebar-text); margin-top: 2px; word-break: break-all; }
+.sidebar-signout {
+  margin-top: 6px; font-size: 10px; color: var(--sidebar-text);
+  background: none; border: none; cursor: pointer; font-family: 'Inter',sans-serif;
+  padding: 0; text-decoration: underline;
+}
+.sidebar-signout:hover { color: #fff; }
+</style>
+</head>
+<body>
+
+<!-- ━━━━━━━ SIDEBAR ━━━━━━━ -->
+<div id="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-icon">⚕</div>
+    <div>
+      <div class="logo-text">MedBill Pro</div>
+      <div class="logo-sub">Dashboard</div>
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-label">Navigation</div>
+    <div class="nav-item" id="nav-upload" onclick="switchSection('upload')">
+      <span class="nav-icon">📂</span> Upload File
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-label">Reports</div>
+    <div class="nav-item" id="nav-billing" onclick="switchSection('billing')">
+      <span class="nav-icon">📋</span> Billing Summary
+    </div>
+    <div class="nav-item" id="nav-posting" onclick="switchSection('posting')">
+      <span class="nav-icon">💰</span> Payment Posting
+    </div>
+    <div class="nav-item" id="nav-rejections" onclick="switchSection('rejections')">
+      <span class="nav-icon">🔄</span> Rejection Summary
+    </div>
+    <div class="nav-item" id="nav-denials" onclick="switchSection('denials')">
+      <span class="nav-icon">❌</span> Daily Denial Summary
+    </div>
+  </div>
+
+  <div class="sidebar-divider"></div>
+
+  <div id="file-box" class="file-info-box" style="display:none">
+    <div class="file-info-label">📎 Loaded File</div>
+    <div class="file-info-name" id="sb-filename">—</div>
+    <div class="file-info-rows" id="sb-rows">—</div>
+  </div>
+
+  <div id="sidebar-user-box" class="sidebar-user-box" style="display:none">
+    <div class="sidebar-user-name" id="sb-user-name">—</div>
+    <div class="sidebar-user-email" id="sb-user-email">—</div>
+    <button class="sidebar-signout" onclick="msSignOut()">Sign out</button>
+  </div>
+</div>
+
+<!-- ━━━━━━━ MAIN ━━━━━━━ -->
+<div id="main">
+
+  <!-- UPLOAD VIEW -->
+  <div id="upload-view">
+    <div class="upload-hero">
+      <h2>Medical Billing Dashboard</h2>
+      <p>Connect directly to your SharePoint Excel file with Microsoft Sign-In — or upload a local file manually.</p>
+    </div>
+
+    <!-- AUTH STATUS -->
+    <div class="auth-status-bar" id="auth-status"></div>
+
+    <!-- MICROSOFT SIGN-IN SECTION -->
+    <div id="ms-auth-section" style="display:flex;flex-direction:column;align-items:center;gap:10px;width:100%;max-width:520px;">
+      <button class="ms-signin-btn" id="ms-signin-btn" onclick="handleMsSignIn()">
+        <svg class="ms-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 21 21">
+          <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
+          <rect x="11" y="1" width="9" height="9" fill="#7fba00"/>
+          <rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>
+          <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
+        </svg>
+        Sign in with Microsoft
+      </button>
+      <div id="ms-fetch-section" style="display:none;flex-direction:column;align-items:center;gap:8px;width:100%;">
+        <button class="fetch-sp-btn" id="fetch-sp-btn" onclick="handleFetchSharePoint()">
+          ☁️ Load from SharePoint (2026 Tracking File)
+        </button>
+        <div style="font-size:11px;color:var(--text3);text-align:center;">
+          Fetches: <code style="font-size:10px;background:#f1f5f9;padding:1px 5px;border-radius:3px;">Billing, Payment, EV, Rejection Tracking 2026.xlsx</code>
+        </div>
+      </div>
+    </div>
+
+    <div class="or-divider">or upload manually</div>
+
+    <!-- FILE UPLOAD -->
+    <div class="drop-zone" id="drop-zone">
+      <input type="file" id="file-input" accept=".xlsx,.xls" />
+      <span class="dz-icon">📊</span>
+      <h3>Drop your Excel file here</h3>
+      <p>or click to browse</p>
+      <div class="dz-chips"><span class="dz-chip">.xlsx</span><span class="dz-chip">.xls</span></div>
+    </div>
+
+    <div class="progress-wrap" id="progress-wrap">
+      <div class="progress-label" id="progress-label">Reading file…</div>
+      <div class="pbar"><div class="pfill" id="pfill"></div></div>
+    </div>
+
+    <div id="parse-error"></div>
+
+    <div class="sheet-cards">
+      <div class="sheet-card"><div class="sheet-card-dot" style="background:var(--blue)"></div><div><h4>Daily Billing</h4><p>Prev Pending, Received, Completed, Pending — per provider per day</p></div></div>
+      <div class="sheet-card"><div class="sheet-card-dot" style="background:var(--green)"></div><div><h4>Daily Posting</h4><p>ERA & EOB counts, Amount Received & Posted per provider</p></div></div>
+      <div class="sheet-card"><div class="sheet-card-dot" style="background:var(--red)"></div><div><h4>Rejections</h4><p>Received, Completed & Pending rejections per provider</p></div></div>
+      <div class="sheet-card"><div class="sheet-card-dot" style="background:var(--orange)"></div><div><h4>Daily Denials</h4><p>Daily denial count per provider</p></div></div>
+    </div>
+  </div>
+
+  <!-- DASHBOARD VIEW -->
+  <div id="dash-view">
+
+    <!-- BILLING SECTION -->
+    <div id="sec-billing" class="dash-section" style="display:none">
+      <div class="dash-header">
+        <div>
+          <div class="dash-title">📋 Billing Summary</div>
+          <div class="dash-subtitle">Charge tracking: Previous Pending → Received → Completed → Pending</div>
+        </div>
+        <div class="dash-header-right">
+          <button class="btn-outline" onclick="switchSection('upload')">↑ New File</button>
+        </div>
+      </div>
+      <div class="filters-bar">
+        <div class="filter-group">
+          <span class="filter-label">View</span>
+          <div class="seg-btn-group" id="b-period-btns">
+            <button class="seg-btn active" onclick="setPeriod('b','day',this)">Day</button>
+            <button class="seg-btn" onclick="setPeriod('b','month',this)">Month</button>
+            <button class="seg-btn" onclick="setPeriod('b','year',this)">Year</button>
+          </div>
+        </div>
+        <div class="filter-sep"></div>
+        <div class="filter-group" id="b-day-filter">
+          <span class="filter-label">Date</span>
+          <input type="date" id="b-date-single" onchange="renderBilling()" />
+        </div>
+        <div class="filter-group" id="b-month-filter" style="display:none">
+          <span class="filter-label">Month</span>
+          <select id="b-month-sel" onchange="renderBilling()"></select>
+        </div>
+        <div class="filter-group" id="b-year-filter" style="display:none">
+          <span class="filter-label">Year</span>
+          <select id="b-year-sel" onchange="renderBilling()"></select>
+        </div>
+        <div class="filter-sep"></div>
+        <div class="filter-group">
+          <span class="filter-label">Provider</span>
+          <select id="b-prov" onchange="renderBilling()"></select>
+        </div>
+      </div>
+      <div class="content">
+        <div class="info-banner">ℹ️ <span><b>How it works:</b> Each day starts with <b>Previous Pending</b> (unsent claims from prior day). Add today's <b>Received</b> new claims → <b>Total = Prev Pending + Received</b>. From this total, <b>Completed</b> are billed and <b>Pending</b> carry forward to tomorrow.</span></div>
+        <div class="kpi-grid" id="b-kpis"></div>
+        <div class="charts-row cols-2">
+          <div class="chart-card"><div class="chart-title"><div class="ct-dot" style="background:var(--blue)"></div>Received vs Completed Over Time</div><div class="chart-wrap"><canvas id="b-c1"></canvas></div></div>
+          <div class="chart-card"><div class="chart-title"><div class="ct-dot" style="background:var(--purple)"></div>Provider Comparison</div><div class="chart-wrap"><canvas id="b-c2"></canvas></div></div>
+        </div>
+        <div class="charts-row cols-1">
+          <div class="chart-card"><div class="chart-title"><div class="ct-dot" style="background:var(--yellow)"></div>Pending Load Over Time (Stacked)</div><div class="chart-wrap"><canvas id="b-c3"></canvas></div></div>
+        </div>
+        <div class="table-card">
+          <div class="table-card-header"><div class="table-card-title">Provider Breakdown</div></div>
+          <div class="table-wrap">
+            <table><thead><tr><th>Provider / Client</th><th>Prev Pending</th><th>Received</th><th>Total (Prev+Rec)</th><th>Completed</th><th>Pending</th><th>Completion Rate</th></tr></thead>
+            <tbody id="b-tbl"></tbody></table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- POSTING SECTION -->
+    <div id="sec-posting" class="dash-section" style="display:none">
+      <div class="dash-header">
+        <div>
+          <div class="dash-title">💰 Payment Posting Summary</div>
+          <div class="dash-subtitle">ERA & EOB payments — received, completed, posted amounts</div>
+        </div>
+        <div class="dash-header-right"><button class="btn-outline" onclick="switchSection('upload')">↑ New File</button></div>
+      </div>
+      <div class="filters-bar">
+        <div class="filter-group">
+          <span class="filter-label">View</span>
+          <div class="seg-btn-group" id="p-period-btns">
+            <button class="seg-btn active" onclick="setPeriod('p','day',this)">Day</button>
+            <button class="seg-btn" onclick="setPeriod('p','month',this)">Month</button>
+            <button class="seg-btn" onclick="setPeriod('p','year',this)">Year</button>
+          </div>
+        </div>
+        <div class="filter-sep"></div>
+        <div class="filter-group" id="p-day-filter">
+          <span class="filter-label">Date</span>
+          <input type="date" id="p-date-single" onchange="renderPosting()" />
+        </div>
+        <div class="filter-group" id="p-month-filter" style="display:none">
+          <span class="filter-label">Month</span>
+          <select id="p-month-sel" onchange="renderPosting()"></select>
+        </div>
+        <div class="filter-group" id="p-year-filter" style="display:none">
+          <span class="filter-label">Year</span>
+          <select id="p-year-sel" onchange="renderPosting()"></select>
+        </div>
+        <div class="filter-sep"></div>
+        <div class="filter-group">
+          <span class="filter-label">Type</span>
+          <select id="p-type" onchange="renderPosting()">
+            <option value="all">ERA + EOB</option>
+            <option value="ERA">ERA Only</option>
+            <option value="EOB">EOB Only</option>
+          </select>
+        </div>
+        <div class="filter-sep"></div>
+        <div class="filter-group">
+          <span class="filter-label">Provider</span>
+          <select id="p-prov" onchange="renderPosting()"></select>
+        </div>
+      </div>
+      <div class="content">
+        <div class="kpi-grid" id="p-kpis"></div>
+        <div class="charts-row cols-2">
+          <div class="chart-card"><div class="chart-title"><div class="ct-dot" style="background:var(--green)"></div>Amount Received vs Posted</div><div class="chart-wrap"><canvas id="p-c1"></canvas></div></div>
+          <div class="chart-card"><div class="chart-title"><div class="ct-dot" style="background:var(--blue)"></div>ERA vs EOB Count</div><div class="chart-wrap"><canvas id="p-c2"></canvas></div></div>
+        </div>
+        <div class="charts-row cols-1">
+          <div class="chart-card"><div class="chart-title"><div class="ct-dot" style="background:var(--purple)"></div>Provider-wise Posted Amount</div><div class="chart-wrap"><canvas id="p-c3"></canvas></div></div>
+        </div>
+        <div class="table-card">
+          <div class="table-card-header"><div class="table-card-title">Posting Detail</div></div>
+          <div class="table-wrap">
+            <table><thead><tr><th>Provider</th><th>Type</th><th>Prev Pending</th><th>Received</th><th>Completed</th><th>Pending</th><th>Amt Received</th><th>Posted Amt</th></tr></thead>
+            <tbody id="p-tbl"></tbody></table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- REJECTIONS SECTION -->
+    <div id="sec-rejections" class="dash-section" style="display:none">
+      <div class="dash-header">
+        <div>
+          <div class="dash-title">🔄 Rejection Summary</div>
+          <div class="dash-subtitle">Claim rejections by provider — received, resolved, outstanding</div>
+        </div>
+        <div class="dash-header-right"><button class="btn-outline" onclick="switchSection('upload')">↑ New File</button></div>
+      </div>
+      <div class="filters-bar">
+        <div class="filter-group">
+          <span class="filter-label">View</span>
+          <div class="seg-btn-group" id="r-period-btns">
+            <button class="seg-btn active" onclick="setPeriod('r','day',this)">Day</button>
+            <button class="seg-btn" onclick="setPeriod('r','month',this)">Month</button>
+            <button class="seg-btn" onclick="setPeriod('r','year',this)">Year</button>
+          </div>
+        </div>
+        <div class="filter-sep"></div>
+        <div class="filter-group" id="r-day-filter">
+          <span class="filter-label">Date</span>
+          <input type="date" id="r-date-single" onchange="renderRejections()" />
+        </div>
+        <div class="filter-group" id="r-month-filter" style="display:none">
+          <span class="filter-label">Month</span>
+          <select id="r-month-sel" onchange="renderRejections()"></select>
+        </div>
+        <div class="filter-group" id="r-year-filter" style="display:none">
+          <span class="filter-label">Year</span>
+          <select id="r-year-sel" onchange="renderRejections()"></select>
+        </div>
+        <div class="filter-sep"></div>
+        <div class="filter-group">
+          <span class="filter-label">Provider</span>
+          <select id="r-prov" onchange="renderRejections()"></select>
+        </div>
+      </div>
+      <div class="content">
+        <div class="kpi-grid" id="r-kpis"></div>
+        <div class="charts-row cols-2">
+          <div class="chart-card"><div class="chart-title"><div class="ct-dot" style="background:var(--red)"></div>Rejections Over Time</div><div class="chart-wrap"><canvas id="r-c1"></canvas></div></div>
+          <div class="chart-card"><div class="chart-title"><div class="ct-dot" style="background:var(--orange)"></div>By Provider</div><div class="chart-wrap"><canvas id="r-c2"></canvas></div></div>
+        </div>
+        <div class="charts-row cols-1">
+          <div class="chart-card"><div class="chart-title"><div class="ct-dot" style="background:var(--yellow)"></div>Received vs Completed vs Pending</div><div class="chart-wrap"><canvas id="r-c3"></canvas></div></div>
+        </div>
+        <div class="table-card">
+          <div class="table-card-header"><div class="table-card-title">Rejection Detail</div></div>
+          <div class="table-wrap">
+            <table><thead><tr><th>Provider</th><th>Received</th><th>Completed</th><th>Pending</th><th>Resolution Rate</th></tr></thead>
+            <tbody id="r-tbl"></tbody></table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DENIALS SECTION -->
+    <div id="sec-denials" class="dash-section" style="display:none">
+      <div class="dash-header">
+        <div>
+          <div class="dash-title">❌ Daily Denial Summary</div>
+          <div class="dash-subtitle">Insurance denial counts by provider over time</div>
+        </div>
+        <div class="dash-header-right"><button class="btn-outline" onclick="switchSection('upload')">↑ New File</button></div>
+      </div>
+      <div class="filters-bar">
+        <div class="filter-group">
+          <span class="filter-label">View</span>
+          <div class="seg-btn-group" id="d-period-btns">
+            <button class="seg-btn active" onclick="setPeriod('d','day',this)">Day</button>
+            <button class="seg-btn" onclick="setPeriod('d','month',this)">Month</button>
+            <button class="seg-btn" onclick="setPeriod('d','year',this)">Year</button>
+          </div>
+        </div>
+        <div class="filter-sep"></div>
+        <div class="filter-group" id="d-day-filter">
+          <span class="filter-label">Date</span>
+          <input type="date" id="d-date-single" onchange="renderDenials()" />
+        </div>
+        <div class="filter-group" id="d-month-filter" style="display:none">
+          <span class="filter-label">Month</span>
+          <select id="d-month-sel" onchange="renderDenials()"></select>
+        </div>
+        <div class="filter-group" id="d-year-filter" style="display:none">
+          <span class="filter-label">Year</span>
+          <select id="d-year-sel" onchange="renderDenials()"></select>
+        </div>
+        <div class="filter-sep"></div>
+        <div class="filter-group">
+          <span class="filter-label">Provider</span>
+          <select id="d-prov" onchange="renderDenials()"></select>
+        </div>
+      </div>
+      <div class="content">
+        <div class="kpi-grid" id="d-kpis"></div>
+        <div class="charts-row cols-2">
+          <div class="chart-card"><div class="chart-title"><div class="ct-dot" style="background:var(--red)"></div>Denial Trend</div><div class="chart-wrap"><canvas id="d-c1"></canvas></div></div>
+          <div class="chart-card"><div class="chart-title"><div class="ct-dot" style="background:var(--orange)"></div>Provider Distribution</div><div class="chart-wrap"><canvas id="d-c2"></canvas></div></div>
+        </div>
+        <div class="charts-row cols-1">
+          <div class="chart-card"><div class="chart-title"><div class="ct-dot" style="background:var(--purple)"></div>Provider-wise Denials Over Time</div><div class="chart-wrap"><canvas id="d-c3"></canvas></div></div>
+        </div>
+        <div class="table-card">
+          <div class="table-card-header"><div class="table-card-title">Denial Detail</div></div>
+          <div class="table-wrap">
+            <table><thead><tr><th>Provider</th><th>Total Denials</th><th>% of Total</th><th>Share Bar</th></tr></thead>
+            <tbody id="d-tbl"></tbody></table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- end dash-view -->
+</div><!-- end main -->
+
+<script>
+// ═══════════════════════════════════════════
+// GLOBALS & CHART SETUP
+// ═══════════════════════════════════════════
+Chart.defaults.font.family = "'Inter', sans-serif";
+Chart.defaults.color = '#64748b';
+Chart.defaults.borderColor = '#e2e8f0';
+Chart.defaults.plugins.legend.labels.boxWidth = 12;
+Chart.defaults.plugins.legend.labels.font = { size: 11 };
+
+const COLORS = ['#2563eb','#16a34a','#7c3aed','#dc2626','#d97706','#ea580c','#0891b2','#be185d'];
+const ML = {'01':'Jan','02':'Feb','03':'Mar','04':'Apr','05':'May','06':'Jun','07':'Jul','08':'Aug','09':'Sep','10':'Oct','11':'Nov','12':'Dec'};
+
+let RAW = { billing:[], posting:[], rejections:[], denials:[] };
+let PER = { b:'day', p:'day', r:'day', d:'day' };
+let CHARTS = {};
+let fileLoaded = false;
+let currentSection = 'upload';
+
+// ═══════════════════════════════════════════
+// MICROSOFT AUTH FUNCTIONS
+// ═══════════════════════════════════════════
+function setAuthStatus(msg, type='loading') {
+  const el = document.getElementById('auth-status');
+  el.style.display = 'flex';
+  el.className = 'auth-status-bar ' + type;
+  el.innerHTML = type === 'loading' ? '⏳ ' + msg : type === 'error' ? '❌ ' + msg : '✅ ' + msg;
+}
+function clearAuthStatus() {
+  document.getElementById('auth-status').style.display = 'none';
+}
+
+async function handleMsSignIn() {
+  const btn = document.getElementById('ms-signin-btn');
+  btn.disabled = true;
+  btn.textContent = 'Signing in…';
+  setAuthStatus('Opening Microsoft login…');
+  try {
+    const account = await msSignIn();
+    btn.style.display = 'none';
+    document.getElementById('ms-fetch-section').style.display = 'flex';
+    setAuthStatus(`Signed in as ${account.username}`, 'success');
+
+    // Show user in sidebar
+    document.getElementById('sb-user-name').textContent = account.name || account.username;
+    document.getElementById('sb-user-email').textContent = account.username;
+    document.getElementById('sidebar-user-box').style.display = 'block';
+
+    setTimeout(clearAuthStatus, 3000);
+  } catch(e) {
+    setAuthStatus(e.message, 'error');
+    btn.disabled = false;
+    btn.innerHTML = `<svg class="ms-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 21 21"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>Sign in with Microsoft`;
+  }
+}
+
+async function handleFetchSharePoint() {
+  const btn = document.getElementById('fetch-sp-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Fetching file…';
+  setAuthStatus('Connecting to SharePoint…');
+  try {
+    setProgress(10, 'Authenticating…');
+    document.getElementById('progress-wrap').style.display = 'block';
+    const arrayBuffer = await fetchSharePointFile();
+    setAuthStatus('File downloaded! Parsing…', 'success');
+    setProgress(30, 'Parsing workbook…');
+    const wb = XLSX.read(arrayBuffer, { type:'array', cellDates:true });
+    setProgress(50, 'Detecting sheets…');
+
+    const sheets = {};
+    wb.SheetNames.forEach(n => {
+      const lo = n.toLowerCase();
+      if (lo.includes('posting')) sheets.posting = n;
+      else if (lo.includes('billing')) sheets.billing = n;
+      else if (lo.includes('rejection')) sheets.rejections = n;
+      else if (lo.includes('denial')) sheets.denials = n;
+    });
+
+    setProgress(60, 'Parsing billing…');   RAW.billing    = parseBilling(wb, sheets.billing);
+    setProgress(72, 'Parsing posting…');   RAW.posting    = parsePosting(wb, sheets.posting);
+    setProgress(84, 'Parsing rejections…'); RAW.rejections = parseRejections(wb, sheets.rejections);
+    setProgress(93, 'Parsing denials…');   RAW.denials    = parseDenials(wb, sheets.denials);
+    setProgress(100, 'Done!');
+
+    const total = RAW.billing.length + RAW.posting.length + RAW.rejections.length + RAW.denials.length;
+    if (!total) {
+      setAuthStatus('No data found — check sheet names in the Excel file.', 'error');
+      btn.disabled = false; btn.textContent = '☁️ Retry';
+      return;
+    }
+
+    fileLoaded = true;
+    const fileName = 'Billing, Payment, EV, Rejection Tracking 2026.xlsx';
+    document.getElementById('sb-filename').textContent = fileName;
+    document.getElementById('sb-rows').textContent =
+      `${RAW.billing.length} billing · ${RAW.posting.length} posting · ${RAW.rejections.length} rejection · ${RAW.denials.length} denial rows`;
+    document.getElementById('file-box').style.display = 'block';
+
+    setAuthStatus('SharePoint file loaded successfully!', 'success');
+    initSelects();
+    setTimeout(() => {
+      clearAuthStatus();
+      switchSection('billing');
+    }, 800);
+
+    btn.textContent = '☁️ Refresh from SharePoint';
+    btn.disabled = false;
+  } catch(e) {
+    setAuthStatus('Error: ' + e.message, 'error');
+    document.getElementById('progress-wrap').style.display = 'none';
+    btn.disabled = false;
+    btn.textContent = '☁️ Retry';
+  }
+}
+
+function msSignOut() {
+  msalApp.logoutPopup().then(() => {
+    document.getElementById('sidebar-user-box').style.display = 'none';
+    document.getElementById('ms-signin-btn').style.display = 'flex';
+    document.getElementById('ms-signin-btn').disabled = false;
+    document.getElementById('ms-signin-btn').innerHTML = `<svg class="ms-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 21 21"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>Sign in with Microsoft`;
+    document.getElementById('ms-fetch-section').style.display = 'none';
+  }).catch(()=>{});
+}
+
+// Check for existing MSAL session on page load
+window.addEventListener('DOMContentLoaded', async () => {
+  await msalApp.handleRedirectPromise().catch(()=>{});
+  const accounts = msalApp.getAllAccounts();
+  if (accounts.length > 0) {
+    msalApp.setActiveAccount(accounts[0]);
+    const acc = accounts[0];
+    document.getElementById('ms-signin-btn').style.display = 'none';
+    document.getElementById('ms-fetch-section').style.display = 'flex';
+    document.getElementById('sb-user-name').textContent = acc.name || acc.username;
+    document.getElementById('sb-user-email').textContent = acc.username;
+    document.getElementById('sidebar-user-box').style.display = 'block';
+    setAuthStatus(`Welcome back, ${acc.name || acc.username}! Click "Load from SharePoint" to refresh data.`, 'success');
+    setTimeout(clearAuthStatus, 4000);
+  }
+});
+
+// ═══════════════════════════════════════════
+// SECTION NAVIGATION
+// ═══════════════════════════════════════════
+function switchSection(name) {
+  // If no file and trying to go to report
+  if (!fileLoaded && name !== 'upload') {
+    alert('Please upload an Excel file first.');
+    return;
+  }
+
+  currentSection = name;
+
+  // Sidebar
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const navEl = document.getElementById('nav-' + name);
+  if (navEl) navEl.classList.add('active');
+
+  // Views
+  document.getElementById('upload-view').style.display = 'none';
+  document.getElementById('dash-view').style.display = 'none';
+  document.querySelectorAll('.dash-section').forEach(s => s.style.display = 'none');
+
+  if (name === 'upload') {
+    document.getElementById('upload-view').style.display = 'flex';
+  } else {
+    document.getElementById('dash-view').style.display = 'flex';
+    const sec = document.getElementById('sec-' + name);
+    if (sec) sec.style.display = 'block';
+    // Re-render on section switch
+    if (name === 'billing') renderBilling();
+    else if (name === 'posting') renderPosting();
+    else if (name === 'rejections') renderRejections();
+    else if (name === 'denials') renderDenials();
+  }
+}
+
+// Init: show upload
+switchSection('upload');
+document.getElementById('nav-upload').classList.add('active');
+
+// ═══════════════════════════════════════════
+// UPLOAD & PARSE
+// ═══════════════════════════════════════════
+const dz = document.getElementById('drop-zone');
+const fi = document.getElementById('file-input');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag-over'); if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+fi.addEventListener('change', e => { if(e.target.files[0]) handleFile(e.target.files[0]); });
+
+function setErr(msg) {
+  const el = document.getElementById('parse-error');
+  el.style.display = 'block'; el.innerHTML = '⚠ ' + msg;
+  document.getElementById('progress-wrap').style.display = 'none';
+}
+function setProgress(pct, label) {
+  document.getElementById('progress-wrap').style.display = 'block';
+  document.getElementById('progress-label').textContent = label;
+  document.getElementById('pfill').style.width = pct + '%';
+}
+
+function handleFile(file) {
+  document.getElementById('parse-error').style.display = 'none';
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!['xlsx','xls'].includes(ext)) { setErr('Please upload an .xlsx or .xls file.'); return; }
+  setProgress(10, 'Reading file…');
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      setProgress(30, 'Parsing workbook…');
+      const wb = XLSX.read(e.target.result, { type:'array', cellDates:true });
+      setProgress(50, 'Detecting sheets…');
+
+      const sheets = {};
+      wb.SheetNames.forEach(n => {
+        const lo = n.toLowerCase();
+        if (lo.includes('posting')) sheets.posting = n;
+        else if (lo.includes('billing')) sheets.billing = n;
+        else if (lo.includes('rejection')) sheets.rejections = n;
+        else if (lo.includes('denial')) sheets.denials = n;
+      });
+
+      setProgress(60, 'Parsing billing…'); RAW.billing = parseBilling(wb, sheets.billing);
+      setProgress(72, 'Parsing posting…'); RAW.posting = parsePosting(wb, sheets.posting);
+      setProgress(84, 'Parsing rejections…'); RAW.rejections = parseRejections(wb, sheets.rejections);
+      setProgress(93, 'Parsing denials…'); RAW.denials = parseDenials(wb, sheets.denials);
+      setProgress(100, 'Done!');
+
+      const total = RAW.billing.length + RAW.posting.length + RAW.rejections.length + RAW.denials.length;
+      if (!total) { setErr('No data found. Check sheet names: Daily Billing, Daily Posting, Rejections, Daily Denials'); return; }
+
+      fileLoaded = true;
+      document.getElementById('sb-filename').textContent = file.name;
+      document.getElementById('sb-rows').textContent =
+        `${RAW.billing.length} billing · ${RAW.posting.length} posting · ${RAW.rejections.length} rejection · ${RAW.denials.length} denial rows`;
+      document.getElementById('file-box').style.display = 'block';
+
+      initSelects();
+      setTimeout(() => {
+        switchSection('billing');
+      }, 400);
+    } catch(err) { setErr('Parse error: ' + err.message + '. Please check your file.'); }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+// ─── Parsers ───
+function toDate(val) {
+  if (!val) return null;
+  if (val instanceof Date) return isNaN(val) ? null : val;
+  if (typeof val === 'number') {
+    try { const d = XLSX.SSF.parse_date_code(val); if(d) return new Date(d.y,d.m-1,d.d); } catch(e){}
+  }
+  const d = new Date(val); return isNaN(d) ? null : d;
+}
+function fd(d) {
+  if (!d) return null;
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function n(v) { const x = parseFloat(v); return isNaN(x) ? 0 : x; }
+function raw(wb, name) {
+  if (!name || !wb.Sheets[name]) return null;
+  return XLSX.utils.sheet_to_json(wb.Sheets[name], { header:1, defval:null, raw:false });
+}
+
+// BILLING: Row 0 = column headers, Row 1 = provider names, Row 2+ = data
+// Columns per provider (groups of 4 starting col 1): Prev Pending, Received, Completed, Pending
+function parseBilling(wb, sheetName) {
+  const rows = raw(wb, sheetName);
+  if (!rows || rows.length < 3) return [];
+  const provs = [];
+  for (let c = 1; c < (rows[0]||[]).length; c += 4) {
+    // Provider name is in row 1
+    let name = rows[1] && rows[1][c] != null ? String(rows[1][c]).trim() : null;
+    if (!name && rows[0] && rows[0][c] != null) name = String(rows[0][c]).trim();
+    if (name && name !== 'Previous Pending' && name !== 'Date') provs.push({ name, col: c });
+  }
+  const result = [];
+  for (let i = 2; i < rows.length; i++) {
+    const d = toDate(rows[i][0]); if (!d) continue;
+    const ds = fd(d);
+    provs.forEach(p => {
+      const c = p.col;
+      result.push({
+        date: ds, provider: p.name,
+        prev_pending: n(rows[i][c]),
+        received: n(rows[i][c+1]),
+        completed: n(rows[i][c+2]),
+        pending: n(rows[i][c+3])
+      });
+    });
+  }
+  return result;
+}
+
+// POSTING: Row 0 = provider names at col 3,9,15,21,27 (every 6)
+// Row 1 = sub-labels; col 1 = type (ERA/EOB)
+function parsePosting(wb, sheetName) {
+  const rows = raw(wb, sheetName);
+  if (!rows || rows.length < 3) return [];
+  const provs = [];
+  for (let c = 3; c < (rows[0]||[]).length; c += 6) {
+    const name = rows[0][c] != null ? String(rows[0][c]).trim() : null;
+    if (name && name !== 'Date') provs.push({ name, col: c });
+  }
+  const result = [];
+  for (let i = 2; i < rows.length; i++) {
+    const d = toDate(rows[i][0]); if (!d) continue;
+    const ds = fd(d);
+    const typeRaw = rows[i][1] ? String(rows[i][1]).trim() : '';
+    const type = typeRaw.toUpperCase().includes('ERA') ? 'ERA' : typeRaw.toUpperCase().includes('EOB') ? 'EOB' : typeRaw;
+    provs.forEach(p => {
+      const c = p.col;
+      result.push({
+        date: ds, provider: p.name, type,
+        prev_pending: n(rows[i][c]),
+        received: n(rows[i][c+1]),
+        completed: n(rows[i][c+2]),
+        pending: n(rows[i][c+3]),
+        amount_received: n(rows[i][c+4]),
+        posted_amount: n(rows[i][c+5])
+      });
+    });
+  }
+  return result;
+}
+
+// REJECTIONS: Row 0 = provider names every 3 cols, Row 1 = sub-labels
+function parseRejections(wb, sheetName) {
+  const rows = raw(wb, sheetName);
+  if (!rows || rows.length < 3) return [];
+  const provs = [];
+  for (let c = 1; c < (rows[0]||[]).length; c += 3) {
+    const name = rows[0][c] != null ? String(rows[0][c]).trim() : null;
+    if (name && name !== 'Date') provs.push({ name, col: c });
+  }
+  const result = [];
+  for (let i = 2; i < rows.length; i++) {
+    const d = toDate(rows[i][0]); if (!d) continue;
+    const ds = fd(d);
+    provs.forEach(p => {
+      const c = p.col;
+      result.push({ date: ds, provider: p.name, received: n(rows[i][c]), completed: n(rows[i][c+1]), pending: n(rows[i][c+2]) });
+    });
+  }
+  return result;
+}
+
+// DENIALS: Row 0 = Date + provider names; rows 1+ = data
+function parseDenials(wb, sheetName) {
+  const rows = raw(wb, sheetName);
+  if (!rows || rows.length < 2) return [];
+  const provCols = [];
+  for (let c = 1; c < (rows[0]||[]).length; c++) {
+    if (rows[0][c] != null) provCols.push({ name: String(rows[0][c]).trim(), col: c });
+  }
+  const result = [];
+  for (let i = 1; i < rows.length; i++) {
+    const d = toDate(rows[i][0]); if (!d) continue;
+    const ds = fd(d);
+    provCols.forEach(p => result.push({ date: ds, provider: p.name, count: n(rows[i][p.col]) }));
+  }
+  return result;
+}
+
+// ═══════════════════════════════════════════
+// INIT SELECTS
+// ═══════════════════════════════════════════
+function initSelects() {
+  // Billing
+  fillMonthSel('b-month-sel', RAW.billing);
+  fillYearSel('b-year-sel', RAW.billing);
+  fillProvSel('b-prov', RAW.billing);
+  setDateRange('b-date-single', RAW.billing);
+
+  // Posting
+  fillMonthSel('p-month-sel', RAW.posting);
+  fillYearSel('p-year-sel', RAW.posting);
+  fillProvSel('p-prov', RAW.posting);
+  setDateRange('p-date-single', RAW.posting);
+
+  // Rejections
+  fillMonthSel('r-month-sel', RAW.rejections);
+  fillYearSel('r-year-sel', RAW.rejections);
+  fillProvSel('r-prov', RAW.rejections);
+  setDateRange('r-date-single', RAW.rejections);
+
+  // Denials
+  fillMonthSel('d-month-sel', RAW.denials);
+  fillYearSel('d-year-sel', RAW.denials);
+  fillProvSel('d-prov', RAW.denials);
+  setDateRange('d-date-single', RAW.denials);
+}
+
+function setDateRange(id, data) {
+  const dates = data.map(r => r.date).filter(Boolean).sort();
+  if (!dates.length) return;
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.min = dates[0];
+  el.max = dates[dates.length - 1];
+  el.value = dates[0]; // default to first date with data
+}
+
+function fillMonthSel(id, data) {
+  const months = [...new Set(data.map(r => r.date.substring(0,7)))].sort();
+  const el = document.getElementById(id); if (!el) return;
+  el.innerHTML = '<option value="all">All Months</option>' +
+    months.map(m => { const [y,mo] = m.split('-'); return `<option value="${m}">${ML[mo]||mo} ${y}</option>`; }).join('');
+}
+
+function fillYearSel(id, data) {
+  const years = [...new Set(data.map(r => r.date.substring(0,4)))].sort();
+  const el = document.getElementById(id); if (!el) return;
+  el.innerHTML = '<option value="all">All Years</option>' +
+    years.map(y => `<option value="${y}">${y}</option>`).join('');
+}
+
+function fillProvSel(id, data) {
+  const provs = [...new Set(data.map(r => r.provider))].filter(Boolean).sort();
+  const el = document.getElementById(id); if (!el) return;
+  el.innerHTML = '<option value="all">All Providers</option>' +
+    provs.map(p => `<option value="${p}">${p}</option>`).join('');
+}
+
+// ═══════════════════════════════════════════
+// PERIOD CONTROLS
+// ═══════════════════════════════════════════
+function setPeriod(px, period, btn) {
+  PER[px] = period;
+  btn.closest('.seg-btn-group').querySelectorAll('.seg-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+
+  // Show/hide date pickers
+  document.getElementById(px+'-day-filter').style.display = period === 'day' ? 'flex' : 'none';
+  document.getElementById(px+'-month-filter').style.display = period === 'month' ? 'flex' : 'none';
+  document.getElementById(px+'-year-filter').style.display = period === 'year' ? 'flex' : 'none';
+
+  if (px==='b') renderBilling();
+  else if (px==='p') renderPosting();
+  else if (px==='r') renderRejections();
+  else renderDenials();
+}
+
+// ═══════════════════════════════════════════
+// DATA HELPERS
+// ═══════════════════════════════════════════
+function mkChart(id, cfg) {
+  if (CHARTS[id]) { CHARTS[id].destroy(); delete CHARTS[id]; }
+  const el = document.getElementById(id); if (!el) return;
+  CHARTS[id] = new Chart(el, cfg);
+}
+function groupBy(data, fn) {
+  const m = {};
+  data.forEach(r => { const k = fn(r); if (!m[k]) m[k] = []; m[k].push(r); });
+  return m;
+}
+function sumF(arr, f) { return (arr||[]).reduce((a,r) => a+(parseFloat(r[f])||0), 0); }
+
+function pkey(r, p) {
+  if (p==='day') return r.date;
+  if (p==='month') return r.date.substring(0,7);
+  return r.date.substring(0,4);
+}
+
+function fK(v) {
+  if (!v && v !== 0) return '0';
+  const abs = Math.abs(v);
+  if (abs >= 1000000) return '$' + (v/1000000).toFixed(2) + 'M';
+  if (abs >= 1000) return '$' + (v/1000).toFixed(1) + 'K';
+  return Math.round(v).toString();
+}
+function fA(v) { return v ? '$' + parseFloat(v).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0}) : '$0'; }
+function kpiCard(label, value, cls, sub) {
+  return `<div class="kpi-card kpi-${cls}"><div class="kpi-label">${label}</div><div class="kpi-value">${value}</div><div class="kpi-sub">${sub||''}</div></div>`;
+}
+
+function applyFilters(data, px, extra) {
+  let d = [...data];
+  const prov = document.getElementById(px+'-prov')?.value;
+  if (prov && prov !== 'all') d = d.filter(r => r.provider === prov);
+
+  const period = PER[px];
+  if (period === 'day') {
+    const dateVal = document.getElementById(px+'-date-single')?.value;
+    if (dateVal) d = d.filter(r => r.date === dateVal);
+  } else if (period === 'month') {
+    const monthVal = document.getElementById(px+'-month-sel')?.value;
+    if (monthVal && monthVal !== 'all') d = d.filter(r => r.date.startsWith(monthVal));
+  } else if (period === 'year') {
+    const yearVal = document.getElementById(px+'-year-sel')?.value;
+    if (yearVal && yearVal !== 'all') d = d.filter(r => r.date.startsWith(yearVal));
+  }
+
+  return extra ? extra(d) : d;
+}
+
+const lOpts = (mx=14, legend=true) => ({
+  responsive:true, maintainAspectRatio:false,
+  plugins:{ legend:{ display:legend, position:'top' } },
+  scales:{ x:{ticks:{maxTicksLimit:mx,font:{size:10}}}, y:{ticks:{font:{size:10}}} }
+});
+const bOpts = (stk=false, mx=14) => ({
+  responsive:true, maintainAspectRatio:false,
+  plugins:{ legend:{ position:'top' } },
+  scales:{
+    x:{stacked:stk,ticks:{maxTicksLimit:mx,maxRotation:35,font:{size:10}}},
+    y:{stacked:stk,ticks:{font:{size:10}}}
+  }
+});
+
+function rateColor(rate) {
+  if (rate >= 80) return 'var(--green)';
+  if (rate >= 50) return 'var(--yellow)';
+  return 'var(--red)';
+}
+
+// ═══════════════════════════════════════════
+// BILLING RENDER
+// ═══════════════════════════════════════════
+function renderBilling() {
+  const data = applyFilters(RAW.billing, 'b');
+  const tPrev = sumF(data,'prev_pending');
+  const tRec = sumF(data,'received');
+  const tComp = sumF(data,'completed');
+  const tPend = sumF(data,'pending');
+  const tTotal = tPrev + tRec;
+  const rate = tTotal > 0 ? Math.round(tComp/tTotal*100) : 0;
+
+  document.getElementById('b-kpis').innerHTML =
+    kpiCard('Previous Pending', fK(tPrev), 'yellow', 'Carried from prior day') +
+    kpiCard('Received Today', fK(tRec), 'blue', 'New claims received') +
+    kpiCard('Total (Prev+Rec)', fK(tTotal), 'purple', 'Total to be billed') +
+    kpiCard('Completed', fK(tComp), 'green', 'Successfully billed') +
+    kpiCard('Pending', fK(tPend), 'red', 'Carry to next day') +
+    kpiCard('Completion Rate', rate+'%', rate>=80?'green':rate>=50?'yellow':'red', 'Of total = billed');
+
+  // Charts
+  const g = groupBy(data, r => pkey(r, PER.b));
+  const lb = Object.keys(g).sort();
+  const recArr = lb.map(k => sumF(g[k],'received'));
+  const compArr = lb.map(k => sumF(g[k],'completed'));
+  const pendArr = lb.map(k => sumF(g[k],'pending'));
+  const prevArr = lb.map(k => sumF(g[k],'prev_pending'));
+  const pr = lb.length > 60 ? 0 : 3;
+
+  mkChart('b-c1', { type:'line', data:{ labels:lb, datasets:[
+    { label:'Received', data:recArr, borderColor:'#2563eb', backgroundColor:'rgba(37,99,235,0.08)', tension:.4, fill:true, pointRadius:pr, borderWidth:2 },
+    { label:'Completed', data:compArr, borderColor:'#16a34a', backgroundColor:'rgba(22,163,74,0.08)', tension:.4, fill:true, pointRadius:pr, borderWidth:2 },
+    { label:'Pending', data:pendArr, borderColor:'#dc2626', backgroundColor:'rgba(220,38,38,0.05)', tension:.4, fill:true, pointRadius:pr, borderWidth:1.5, borderDash:[4,3] },
+  ]}, options:lOpts() });
+
+  const pd = groupBy(data, r => r.provider);
+  const pl = Object.keys(pd).sort();
+  mkChart('b-c2', { type:'bar', data:{ labels:pl, datasets:[
+    { label:'Received', data:pl.map(p=>sumF(pd[p],'received')), backgroundColor:'#2563eb', borderRadius:4 },
+    { label:'Completed', data:pl.map(p=>sumF(pd[p],'completed')), backgroundColor:'#16a34a', borderRadius:4 },
+    { label:'Pending', data:pl.map(p=>sumF(pd[p],'pending')), backgroundColor:'#dc2626', borderRadius:4 },
+  ]}, options:bOpts() });
+
+  mkChart('b-c3', { type:'bar', data:{ labels:lb, datasets:[
+    { label:'Prev Pending', data:prevArr, backgroundColor:'rgba(217,119,6,0.7)', borderRadius:2 },
+    { label:'Received', data:recArr, backgroundColor:'rgba(37,99,235,0.7)', borderRadius:2 },
+    { label:'Completed', data:compArr, backgroundColor:'rgba(22,163,74,0.7)', type:'line', borderColor:'#16a34a', fill:false, tension:.4, pointRadius:pr, borderWidth:2 },
+  ]}, options:bOpts(true) });
+
+  // Table
+  let html = '';
+  for (const [pv, rows] of Object.entries(pd).sort()) {
+    const pp=sumF(rows,'prev_pending'), rv=sumF(rows,'received'), co=sumF(rows,'completed'), pe=sumF(rows,'pending');
+    const tot=pp+rv, rt=tot>0?Math.round(co/tot*100):0;
+    html += `<tr>
+      <td class="lbl">${pv}</td>
+      <td class="c-yellow">${Math.round(pp)}</td>
+      <td class="c-blue">${Math.round(rv)}</td>
+      <td class="c-purple">${Math.round(tot)}</td>
+      <td class="c-green">${Math.round(co)}</td>
+      <td class="c-red">${Math.round(pe)}</td>
+      <td><div class="rate-bar"><div class="rate-bar-track"><div class="rate-bar-fill" style="width:${rt}%;background:${rateColor(rt)}"></div></div><span style="font-size:12px;font-weight:600;color:${rateColor(rt)}">${rt}%</span></div></td>
+    </tr>`;
+  }
+  if (!html) html = `<tr><td colspan="7" class="no-data">No data for selected filter</td></tr>`;
+  else html += `<tr class="total-row"><td class="lbl">TOTAL</td><td class="c-yellow">${Math.round(tPrev)}</td><td class="c-blue">${Math.round(tRec)}</td><td class="c-purple">${Math.round(tTotal)}</td><td class="c-green">${Math.round(tComp)}</td><td class="c-red">${Math.round(tPend)}</td><td><span style="font-weight:700;color:${rateColor(rate)}">${rate}%</span></td></tr>`;
+  document.getElementById('b-tbl').innerHTML = html;
+}
+
+// ═══════════════════════════════════════════
+// POSTING RENDER
+// ═══════════════════════════════════════════
+function renderPosting() {
+  const tp = document.getElementById('p-type')?.value || 'all';
+  const data = applyFilters(RAW.posting, 'p', d => tp==='all' ? d : d.filter(r=>r.type===tp));
+  const tRec=sumF(data,'received'), tComp=sumF(data,'completed'), tPend=sumF(data,'pending');
+  const tAmtR=sumF(data,'amount_received'), tPost=sumF(data,'posted_amount');
+  const eraRec=sumF(data.filter(r=>r.type==='ERA'),'received');
+  const eobRec=sumF(data.filter(r=>r.type==='EOB'),'received');
+
+  document.getElementById('p-kpis').innerHTML =
+    kpiCard('Received', fK(tRec), 'blue', 'ERA + EOB total') +
+    kpiCard('Completed', fK(tComp), 'green', 'Posted successfully') +
+    kpiCard('Pending', fK(tPend), 'red', 'Not yet posted') +
+    kpiCard('Amt Received', fA(tAmtR), 'purple', 'Total value in') +
+    kpiCard('Posted Amount', fA(tPost), 'teal', 'Total value posted') +
+    kpiCard('ERA / EOB', Math.round(eraRec)+' / '+Math.round(eobRec), 'orange', 'ERA vs EOB count');
+
+  const g = groupBy(data, r => pkey(r, PER.p));
+  const lb = Object.keys(g).sort();
+  const aArr = lb.map(k=>sumF(g[k],'amount_received'));
+  const psArr = lb.map(k=>sumF(g[k],'posted_amount'));
+  const pr = lb.length > 60 ? 0 : 3;
+
+  mkChart('p-c1', { type:'bar', data:{ labels:lb, datasets:[
+    { label:'Amt Received', data:aArr, backgroundColor:'rgba(22,163,74,0.7)', borderColor:'#16a34a', borderWidth:1, borderRadius:3 },
+    { label:'Posted Amt', data:psArr, backgroundColor:'rgba(37,99,235,0.7)', borderColor:'#2563eb', borderWidth:1, borderRadius:3 },
+  ]}, options:bOpts() });
+
+  const eG = groupBy(data.filter(r=>r.type==='ERA'), r=>pkey(r,PER.p));
+  const oG = groupBy(data.filter(r=>r.type==='EOB'), r=>pkey(r,PER.p));
+  mkChart('p-c2', { type:'line', data:{ labels:lb, datasets:[
+    { label:'ERA', data:lb.map(k=>sumF(eG[k]||[],'received')), borderColor:'#2563eb', tension:.4, pointRadius:pr, borderWidth:2 },
+    { label:'EOB', data:lb.map(k=>sumF(oG[k]||[],'received')), borderColor:'#16a34a', tension:.4, pointRadius:pr, borderWidth:2 },
+  ]}, options:lOpts() });
+
+  const pd = groupBy(data, r=>r.provider);
+  const pl = Object.keys(pd).sort();
+  mkChart('p-c3', { type:'bar', data:{ labels:pl, datasets:[
+    { label:'Amt Received', data:pl.map(p=>sumF(pd[p],'amount_received')), backgroundColor:'#16a34a', borderRadius:4 },
+    { label:'Posted Amt', data:pl.map(p=>sumF(pd[p],'posted_amount')), backgroundColor:'#2563eb', borderRadius:4 },
+  ]}, options:bOpts() });
+
+  const tg = groupBy(data, r=>r.provider+'||'+r.type);
+  let html = '';
+  for (const [key, rows] of Object.entries(tg).sort()) {
+    const [pv, t] = key.split('||');
+    const bdg = t==='ERA'?'<span class="badge badge-era">ERA</span>':t==='EOB'?'<span class="badge badge-eob">EOB</span>':t;
+    html += `<tr><td class="lbl">${pv}</td><td>${bdg}</td><td class="c-yellow">${Math.round(sumF(rows,'prev_pending'))}</td><td class="c-blue">${Math.round(sumF(rows,'received'))}</td><td class="c-green">${Math.round(sumF(rows,'completed'))}</td><td class="c-red">${Math.round(sumF(rows,'pending'))}</td><td class="c-green">${fA(sumF(rows,'amount_received'))}</td><td class="c-blue">${fA(sumF(rows,'posted_amount'))}</td></tr>`;
+  }
+  if (!html) html = `<tr><td colspan="8" class="no-data">No data for selected filter</td></tr>`;
+  else html += `<tr class="total-row"><td class="lbl" colspan="2">TOTAL</td><td class="c-yellow">${Math.round(sumF(data,'prev_pending'))}</td><td class="c-blue">${Math.round(tRec)}</td><td class="c-green">${Math.round(tComp)}</td><td class="c-red">${Math.round(tPend)}</td><td class="c-green">${fA(tAmtR)}</td><td class="c-blue">${fA(tPost)}</td></tr>`;
+  document.getElementById('p-tbl').innerHTML = html;
+}
+
+// ═══════════════════════════════════════════
+// REJECTIONS RENDER
+// ═══════════════════════════════════════════
+function renderRejections() {
+  const data = applyFilters(RAW.rejections, 'r');
+  const tRec=sumF(data,'received'), tComp=sumF(data,'completed'), tPend=sumF(data,'pending');
+  const rate=tRec>0?Math.round(tComp/tRec*100):0;
+
+  document.getElementById('r-kpis').innerHTML =
+    kpiCard('Received', fK(tRec), 'red', 'Total rejections') +
+    kpiCard('Completed', fK(tComp), 'green', 'Resolved/fixed') +
+    kpiCard('Pending', fK(tPend), 'yellow', 'Still open') +
+    kpiCard('Resolution Rate', rate+'%', rate>=80?'green':rate>=50?'yellow':'red', 'Clearance rate');
+
+  const g = groupBy(data, r=>pkey(r,PER.r));
+  const lb = Object.keys(g).sort();
+  const rArr=lb.map(k=>sumF(g[k],'received')), cArr=lb.map(k=>sumF(g[k],'completed')), pArr=lb.map(k=>sumF(g[k],'pending'));
+  const pr = lb.length>60?0:3;
+
+  mkChart('r-c1', { type:'line', data:{ labels:lb, datasets:[
+    { label:'Received', data:rArr, borderColor:'#dc2626', tension:.4, pointRadius:pr, borderWidth:2 },
+    { label:'Completed', data:cArr, borderColor:'#16a34a', tension:.4, pointRadius:pr, borderWidth:2 },
+  ]}, options:lOpts() });
+
+  const pd=groupBy(data,r=>r.provider), pl=Object.keys(pd).sort();
+  mkChart('r-c2', { type:'bar', data:{ labels:pl, datasets:[
+    { label:'Received', data:pl.map(p=>sumF(pd[p],'received')), backgroundColor:'#dc2626', borderRadius:4 },
+    { label:'Completed', data:pl.map(p=>sumF(pd[p],'completed')), backgroundColor:'#16a34a', borderRadius:4 },
+    { label:'Pending', data:pl.map(p=>sumF(pd[p],'pending')), backgroundColor:'#d97706', borderRadius:4 },
+  ]}, options:bOpts() });
+
+  mkChart('r-c3', { type:'bar', data:{ labels:lb, datasets:[
+    { label:'Completed', data:cArr, backgroundColor:'rgba(22,163,74,0.7)', borderRadius:2 },
+    { label:'Pending', data:pArr, backgroundColor:'rgba(217,119,6,0.7)', borderRadius:2 },
+    { label:'Received', data:rArr, type:'line', borderColor:'#dc2626', fill:false, tension:.4, pointRadius:pr, borderWidth:2 },
+  ]}, options:bOpts(true) });
+
+  let html = '';
+  for (const [pv, rows] of Object.entries(pd).sort()) {
+    const rv=sumF(rows,'received'), co=sumF(rows,'completed'), pe=sumF(rows,'pending'), rt=rv>0?Math.round(co/rv*100):0;
+    html += `<tr><td class="lbl">${pv}</td><td class="c-red">${Math.round(rv)}</td><td class="c-green">${Math.round(co)}</td><td class="c-yellow">${Math.round(pe)}</td>
+    <td><div class="rate-bar"><div class="rate-bar-track"><div class="rate-bar-fill" style="width:${rt}%;background:${rateColor(rt)}"></div></div><span style="font-size:12px;font-weight:600;color:${rateColor(rt)}">${rt}%</span></div></td></tr>`;
+  }
+  if (!html) html = `<tr><td colspan="5" class="no-data">No data for selected filter</td></tr>`;
+  else html += `<tr class="total-row"><td class="lbl">TOTAL</td><td class="c-red">${Math.round(tRec)}</td><td class="c-green">${Math.round(tComp)}</td><td class="c-yellow">${Math.round(tPend)}</td><td><span style="font-weight:700;color:${rateColor(rate)}">${rate}%</span></td></tr>`;
+  document.getElementById('r-tbl').innerHTML = html;
+}
+
+// ═══════════════════════════════════════════
+// DENIALS RENDER
+// ═══════════════════════════════════════════
+function renderDenials() {
+  const data = applyFilters(RAW.denials, 'd');
+  const tot = sumF(data,'count');
+  const pd = groupBy(data, r=>r.provider);
+  const pl = Object.keys(pd).sort();
+
+  document.getElementById('d-kpis').innerHTML =
+    kpiCard('Total Denials', Math.round(tot).toString(), 'red', 'All providers') +
+    pl.map((p,i) => {
+      const c=Math.round(sumF(pd[p],'count')), pct=tot>0?Math.round(c/tot*100):0;
+      return kpiCard(p, c.toString(), ['blue','green','purple','orange','yellow','teal'][i%6], pct+'% of total');
+    }).join('');
+
+  const g = groupBy(data, r=>pkey(r,PER.d));
+  const lb = Object.keys(g).sort();
+  const cArr = lb.map(k=>sumF(g[k],'count'));
+  const pr = lb.length>60?0:3;
+
+  mkChart('d-c1', { type:'bar', data:{ labels:lb, datasets:[
+    { label:'Denials', data:cArr, backgroundColor:'rgba(220,38,38,0.7)', borderColor:'#dc2626', borderWidth:1, borderRadius:3 }
+  ]}, options:{ ...bOpts(), plugins:{legend:{display:false}} } });
+
+  mkChart('d-c2', { type:'doughnut', data:{ labels:pl, datasets:[{
+    data:pl.map(p=>Math.round(sumF(pd[p],'count'))),
+    backgroundColor:COLORS, borderWidth:3, borderColor:'#fff'
+  }]}, options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:'right' } } } });
+
+  const mDS = pl.map((p,i) => {
+    const pg = groupBy(pd[p], r=>pkey(r,PER.d));
+    return { label:p, data:lb.map(k=>sumF(pg[k]||[],'count')), borderColor:COLORS[i%COLORS.length], tension:.4, fill:false, pointRadius:pr, borderWidth:2 };
+  });
+  mkChart('d-c3', { type:'line', data:{ labels:lb, datasets:mDS }, options:lOpts() });
+
+  let html = '';
+  for (const p of pl) {
+    const c=Math.round(sumF(pd[p],'count')), pct=tot>0?Math.round(c/tot*100):0;
+    html += `<tr><td class="lbl">${p}</td><td class="c-red">${c}</td><td>${pct}%</td>
+    <td><div class="rate-bar-track" style="max-width:200px"><div class="rate-bar-fill" style="width:${pct}%;background:var(--red)"></div></div></td></tr>`;
+  }
+  if (!html) html = `<tr><td colspan="4" class="no-data">No data for selected filter</td></tr>`;
+  else html += `<tr class="total-row"><td class="lbl">TOTAL</td><td class="c-red">${Math.round(tot)}</td><td>100%</td><td></td></tr>`;
+  document.getElementById('d-tbl').innerHTML = html;
+}
+</script>
+</body>
+</html>
